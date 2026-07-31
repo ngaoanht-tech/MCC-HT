@@ -1,0 +1,31 @@
+# Python and editor state
+__pycache__/
+*.py[cod]
+.Python
+.pytest_cache/
+.idea/
+.vscode/
+*.tmp
+*.log
+.DS_Store
+Thumbs.db
+
+# Local model, transform, and training artifacts
+results/
+*.pth
+*.pkl
+training_loss_*.csv
+training_loss_*.png
+
+# Generated inference and diagnostic outputs
+diverse_results/
+reports/
+archive/
+tmp/
+
+# Keep the compact baseline reference outputs published with the source.
+!examples/
+!examples/baseline_results/
+!examples/baseline_results/*.csv
+!examples/baseline_results/*.xlsx
+!examples/baseline_results/*.md
