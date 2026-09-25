@@ -33,7 +33,7 @@ class AnnualDatasetCausalityTests(unittest.TestCase):
     def setUpClass(cls):
         cls.dataset = AnnualReservoirDataset(
             data_dir='test',
-            years=[2018],
+            years=[2022],
             normalize=False,
             use_log_transform=False,
             fit_transforms=True,

@@ -29,6 +29,7 @@ from functools import lru_cache
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 from constraint.strict_converter import StrictWaterLevelConverter
+from constraint.differentiable_joint_projection import project_joint_schedule
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -731,6 +732,20 @@ def _apply_level_projection(
     # as a pure level-feasibility helper without modifying q_proj further.
 
     return q_proj, level_qmin, level_qmax
+
+
+def _joint_storage_bounds(
+    V_min: torch.Tensor,
+    V_max: torch.Tensor,
+    level_limits: Optional[Dict[str, torch.Tensor]],
+    curves: Optional[TorchCurves],
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Include absolute water-level bounds; existing level-change code is unchanged."""
+    if level_limits is None or curves is None:
+        return V_min, V_max
+    level_vmin = curves.h2v_all(level_limits["H_min"])
+    level_vmax = curves.h2v_all(level_limits["H_max"])
+    return torch.maximum(V_min, level_vmin), torch.minimum(V_max, level_vmax)
 
 
 # ---------------------------------------------------------------------------
@@ -1909,7 +1924,26 @@ def train_multiscale_model(
                 post_step=_train_post_step,
             )
             q_phys = sc_result["q_phys"]
-            q_in_pred = sc_result["q_in_pred"]
+            joint_vmin, joint_vmax = _joint_storage_bounds(
+                Vmin_use, Vmax_use, level_limits_slice, curves_for_proj
+            )
+            flow_ramps = _CONSTRAINT_CFG.get("ramp_constraints", {})
+            q_phys, joint_storage = project_joint_schedule(
+                q_proposed=q_phys,
+                head_inflow=head_inflow,
+                interval_inflow=interval_inflow,
+                V0=V0,
+                V_target=terminal_effective_target,
+                q_min=qmin,
+                q_max=qmax,
+                V_min=joint_vmin,
+                V_max=joint_vmax,
+                delta_t=dt_vec,
+                flow_ramp_up=flow_ramps.get("ramp_up"),
+                flow_ramp_down=flow_ramps.get("ramp_down"),
+            )
+            q_in_pred = _compute_cascade_inflows(q_phys, head_inflow, interval_inflow)
+            model.last_projection = {"V": joint_storage, "meta": None}
             # Use storage-based terminal targets for tail losses.
             V0_use = storage_V0.expand(V0.shape[0], -1)
             V_target_use = V_target
@@ -2135,8 +2169,27 @@ def train_multiscale_model(
                     post_step=_val_post_step,
                 )
                 q_phys = sc_result["q_phys"]
-                q_in_pred = sc_result["q_in_pred"]
-                projection_state = getattr(model, "last_projection", {"V": None, "meta": None})
+                joint_vmin, joint_vmax = _joint_storage_bounds(
+                    Vmin_use, Vmax_use, level_limits_slice, curves_for_proj
+                )
+                flow_ramps = _CONSTRAINT_CFG.get("ramp_constraints", {})
+                q_phys, joint_storage = project_joint_schedule(
+                    q_proposed=q_phys,
+                    head_inflow=head_inflow,
+                    interval_inflow=interval_inflow,
+                    V0=V0,
+                    V_target=terminal_effective_target,
+                    q_min=qmin,
+                    q_max=qmax,
+                    V_min=joint_vmin,
+                    V_max=joint_vmax,
+                    delta_t=dt_vec,
+                    flow_ramp_up=flow_ramps.get("ramp_up"),
+                    flow_ramp_down=flow_ramps.get("ramp_down"),
+                )
+                q_in_pred = _compute_cascade_inflows(q_phys, head_inflow, interval_inflow)
+                projection_state = {"V": joint_storage, "meta": None}
+                model.last_projection = projection_state
                 V0_use = storage_V0.expand(V0.shape[0], -1)
                 V_target_use = V_target
                 dt_vec_loss = dt_vec.to(dtype=q_phys.dtype, device=q_phys.device)
@@ -3631,7 +3684,32 @@ def generate_diverse_annual_schedules(
                     "meta": meta,
                 }
 
-            q_phys = torch.maximum(torch.minimum(q_phys, qmax), qmin)
+            # Use the same differentiable joint layer as training after the
+            # existing projections; the final cascade path is solved together.
+            ramp_constraints = _CONSTRAINT_CFG.get("ramp_constraints", {})
+            joint_vmin, joint_vmax = _joint_storage_bounds(
+                storage_Vmin, storage_Vmax, level_limits, curves_for_proj
+            )
+            q_phys, projection_V = project_joint_schedule(
+                q_proposed=q_phys,
+                head_inflow=head_inflow,
+                interval_inflow=interval_inflow,
+                V0=storage_V0,
+                V_target=terminal_best_effort_target,
+                q_min=qmin,
+                q_max=qmax,
+                V_min=joint_vmin,
+                V_max=joint_vmax,
+                delta_t=dt_vec,
+                flow_ramp_up=ramp_constraints.get("ramp_up"),
+                flow_ramp_down=ramp_constraints.get("ramp_down"),
+            )
+            meta = {
+                "residual": terminal_best_effort_target - projection_V[:, -1, :],
+                "requested_residual": storage_VT - projection_V[:, -1, :],
+                "infeasible": torch.zeros_like(terminal_best_effort_target, dtype=torch.bool),
+            }
+            model.last_projection = {"V": projection_V.detach(), "meta": meta}
             q_in_pred = _compute_cascade_inflows(q_phys, head_inflow, interval_inflow)
             decoded.append(q_phys.squeeze(0).detach().cpu().numpy())
 
@@ -3740,10 +3818,6 @@ def generate_diverse_annual_schedules(
     else:
         interval_np = np.zeros((T, max(0, R - 1)), dtype=np.float64)
 
-    # Storage bounds are already available as tensors; use them directly to avoid column inference errors.
-    vmin_np = storage_Vmin.squeeze(0).detach().cpu().numpy().astype(np.float64)
-    vmax_np = storage_Vmax.squeeze(0).detach().cpu().numpy().astype(np.float64)
-
     def schedule_df_export(
         schedule_np: np.ndarray,
         scheme_idx: int,
@@ -3767,15 +3841,6 @@ def generate_diverse_annual_schedules(
             storage_traj = np.asarray(storage_traj_np, dtype=np.float64)
             if storage_traj.shape != schedule_np.shape:
                 raise ValueError("storage_traj_np shape must match schedule_np shape [T,R]")
-        storage_traj = np.minimum(np.maximum(storage_traj, vmin_np), vmax_np)
-        tol = 1e-4
-        lo_mask = storage_traj < vmin_np
-        hi_mask = storage_traj > vmax_np
-        near_lo = (storage_traj >= (vmin_np - tol)) & lo_mask
-        near_hi = (storage_traj <= (vmax_np + tol)) & hi_mask
-        storage_traj[near_lo] = vmin_np[near_lo]
-        storage_traj[near_hi] = vmax_np[near_hi]
-
         data: Dict[str, Any] = {
             "scheme": [scheme_name] * T,
             "period": period_labels,
@@ -3858,12 +3923,6 @@ def generate_diverse_annual_schedules(
     stats_path.write_text(json.dumps(stats, ensure_ascii=False, indent=2), encoding="utf-8")
 
     return decoded, stats
-
-
-
-
-
-
 
 
 

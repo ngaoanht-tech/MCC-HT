@@ -48,6 +48,15 @@ must match `config.yaml` and the inference code.
 
 ## Run Inference
 
+Training, validation, and inference now use the same differentiable joint
+projection after the existing model and level projections. The new layer
+couples all reservoirs and periods through water balance, release and storage
+bounds, release ramps, and effective terminal-storage targets. Training losses
+and gradients use its output. The existing water-level-change projection is
+unchanged; that constraint is not guaranteed by the final joint layer. A
+failed joint solve raises an error instead of exporting an unprojected scheme.
+The new layer requires `cvxpy` and `cvxpylayers` from `requirements.txt`.
+
 One-click inference for the reference year (2022):
 
 ```bash
