@@ -19,7 +19,7 @@ class ConfigLoader:
         Args:
             config_path: 配置文件路径
         """
-        self.config_path = self._find_config_path(config_path)
+        self.config_path = self._find_config_path(os.environ.get("MCC_HT_CONFIG", config_path))
         self._last_modified = None
         self.config = self._load_config()
     

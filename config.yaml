@@ -37,7 +37,7 @@ projection:
     enabled: true
   enabled: true
   terminal_second_rebalance_iters: 5
-  post_clamp_rebalance_iters: 5
+  post_clamp_rebalance_iters: 100
 curriculum:
   k:
     start: 36
@@ -52,11 +52,6 @@ curriculum:
     w_end: 0.04
     start_epoch: 18
     end_epoch: 80
-  term:
-    w_start: 1.2
-    w_end: 2.4
-    start_epoch: 0
-    end_epoch: 32
 data:
   preprocessing:
     fit_transforms: true
@@ -65,16 +60,72 @@ data:
   results_dir: results
   train_data_dir: train
   years:
-    validation:
-    - 1964
-    - 1963
     train:
     - 1959
+    - 1960
     - 1961
     - 1962
     - 1963
     - 1964
+    - 1965
+    - 1966
+    - 1967
+    - 1968
+    - 1969
+    - 1970
+    - 1971
+    - 1972
+    - 1973
+    - 1974
+    - 1975
+    - 1976
+    - 1977
+    - 1978
+    - 1979
+    - 1980
+    - 1981
+    - 1982
+    - 1983
+    - 1984
+    - 1985
+    - 1986
+    - 1987
+    - 1988
+    - 1989
+    - 1990
+    - 1991
+    - 1992
+    - 1993
+    - 1994
+    - 1995
+    - 1996
+    - 1997
+    - 1998
+    - 1999
+    - 2000
+    - 2001
+    - 2002
+    - 2003
+    - 2004
+    - 2005
+    - 2006
+    - 2007
+    - 2008
+    validation:
+    - 2009
+    - 2010
+    - 2011
+    - 2012
+    - 2013
+    - 2014
     test:
+    - 2015
+    - 2016
+    - 2017
+    - 2018
+    - 2019
+    - 2020
+    - 2021
     - 2022
 loss:
   barrier:
@@ -103,7 +154,7 @@ loss:
       default: 1.0
   weights:
     flow: 0.35
-    term: 1.2
+    term: 0.35
     ramp: 0.2
     power: 0.08
     barrier: 0.0
@@ -190,7 +241,7 @@ metrics:
   infeasible_penalty: 1000.0
   feasible_violation_tolerance: 0.0
   feasible_infeasible_tolerance: 0.0
-  feasible_term_error_tolerance: 0.02
+  feasible_term_error_tolerance: 0.01
   infeasible_warn_ratio: 0.0
 trainer:
   max_epochs: 500
@@ -269,6 +320,13 @@ generation:
   output_dir: diverse_results
   population_size: 1
   years:
+  - 2015
+  - 2016
+  - 2017
+  - 2018
+  - 2019
+  - 2020
+  - 2021
   - 2022
   self_consistent_iters: 3
   terminal_policy:

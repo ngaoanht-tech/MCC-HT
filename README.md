@@ -1,137 +1,60 @@
-# MCC-HT
+# MCC-HT manuscript-aligned core with retained joint projection
 
-MCC-HT is a Transformer-based scheduling framework for a six-reservoir cascade:
-乌东德, 白鹤滩, 溪洛渡, 向家坝, 三峡, and 葛洲坝.  The repository contains the
-paper baseline code, constraint data, test inputs, and small example outputs.
+本目录按 Manuscript_clean_R 的方法描述调整核心流程，并按作者要求保留后续加入的联合投影层及其训练、验证、推理调用。它不是当时生成投稿结果的归档版本，也没有声称复现原文的结果和2.79秒运行时间。原始压缩包未改动。
 
-## What Is Included
+## 本次调整
 
-- `multiscale_predictor.py`: model training and the main annual inference entry point.
-- `models.py`, `losses.py`, `feature_engineering.py`, `data.py`: model, objectives,
-  features, and annual dataset preparation.
-- `constraint/`: release, storage, and water-level constraint utilities.
-- `shuxing/`: reservoir curves, plant characteristics, and constraint tables.
-- `train/`, `test/`, `real_results/`: input data used by the baseline workflow.
-- `utils/`: post-processing, feasibility checks, and evaluation utilities.
-- `examples/baseline_results/`: one generated schedule and post-processed workbook
-  for each year from 2015 to 2022.
+- 初步生成返回式(9)–(11)的原始流量；首次流量限幅由ICR Stage 1完成。
+- 每次外层更新包含完整ICR；至少两轮、最多三轮。按重构轨迹的运行约束和0.01m末水位判据决定是否提前结束，不以相邻轮流量变化作为终止条件。
+- 平滑项改为式(24)的平方差；末水位MSE取消释放能力归一化，与流量MSE共用lambda_exp。
+- 式(23)训练功率代理使用W，最终发电仍使用容量限幅、过机流量和弃水分离。验证选模的功率指标仍以GW缩放，避免把旧选模系数误用到W。
+- `paper_evaluate.py`分别计算原始pre-ICR、post-ICR/pre-joint和最终post-joint的指标。FR只统计全年全部水库末水位达标，TPR按水库—年份统计；完整可行率另列。路径违反不增加数值容差。
+- `benchmark_paper.py`每年重复五次，先按年平均，再对年份平均；GPU计时前后同步。范围含整个推理入口、ICR、梯级更新、保留的联合投影与阶段导出，不含训练。此入口包含模型/变换加载及文件导出开销，不能直接替代或声称验证论文原始计时。
 
-Model checkpoints, preprocessing transforms, training logs, bulk generated results,
-and experiment archives are intentionally excluded from Git.  They must be supplied
-locally under `results/` before inference or training.
+## 环境
 
-## Environment
+推荐按 `requirements.txt` 配置PyTorch和联合投影依赖。Windows可用本次验证的 `requirements-windows-tested.txt`。在项目目录执行：
 
-Python 3.10 or later is recommended.  Install the dependencies in an isolated
-environment:
-
-```bash
-pip install -r requirements.txt
+```powershell
+python -m pip install -r requirements-windows-tested.txt
+python -m pytest tests -q
 ```
 
-For GPU inference, install the PyTorch build matching the local CUDA runtime from
-the official PyTorch installation instructions.
+Windows验证依赖为PyTorch 2.8.0+cu128（由本机已有环境提供；确切版本见CHANGELOG中的验证记录）、NumPy 1.26.4、CVXPY 1.6.5、cvxpylayers 0.1.6、diffcp 1.0.23。安装PyTorch时应选择适合本机的版本；该层原实现和三个调用均保留。较旧diffcp会给出弃用警告。
 
-## Required Local Artifacts
+## 配置和数据
 
-Before inference, place the baseline artifacts in `results/`:
+默认 `config.yaml` 为论文划分：1959–2008训练、2009–2014验证、2015–2022测试。完整数据、checkpoint、超参数文件和训练变换不在原包内，须自行恢复；缺少年份会报错，不会静默缩减评估集。
 
-```text
-results/
-  multiscale_best_model.pth
-  multiscale_hyperparameters.json
-  annual_transforms.pkl
-```
+`config.example.yaml`只用于包内参考数据：1959、1961、1962训练，1963、1964验证，2022测试。它不能用于复现论文结果。
 
-These files are excluded because they are binary experiment artifacts.  Their names
-must match `config.yaml` and the inference code.
-
-## Run Inference
-
-Training, validation, and inference now use the same differentiable joint
-projection after the existing model and level projections. The new layer
-couples all reservoirs and periods through water balance, release and storage
-bounds, release ramps, and effective terminal-storage targets. Training losses
-and gradients use its output. The existing water-level-change projection is
-unchanged; that constraint is not guaranteed by the final joint layer. A
-failed joint solve raises an error instead of exporting an unprojected scheme.
-The new layer requires `cvxpy` and `cvxpylayers` from `requirements.txt`.
-
-One-click inference for the reference year (2022):
-
-```bash
+```powershell
+# 示例配置，仅在当前命令行会话生效
+$env:MCC_HT_CONFIG = 'config.example.yaml'
+python train.py
 python infer.py
+python paper_evaluate.py --directory diverse_results --years 2022
+python benchmark_paper.py --years 2022
 ```
 
-Or manually:
+恢复完整数据并使用论文配置时：
 
-```bash
-python -X utf8 -c "from multiscale_predictor import run_multiscale_inference; run_multiscale_inference(years=[2022], samples=1)"
+```powershell
+$env:MCC_HT_CONFIG = 'config.yaml'
+python train.py
+python infer.py
+python paper_evaluate.py --directory diverse_results --years 2015 2016 2017 2018 2019 2020 2021 2022
+python benchmark_paper.py --years 2015 2016 2017 2018 2019 2020 2021 2022
 ```
 
-## Post-Process Results
+训练产物位于本目录下results，不会使用审查原目录的结果文件。推理仍要求results/multiscale_best_model.pth、multiscale_hyperparameters.json和annual_transforms.pkl。旧checkpoint在本次修改后不保证有相同输出。
 
-```bash
-python -X utf8 utils/postprocess_power_level.py --years 2022
-python -X utf8 -c "import sys; sys.path.insert(0,'.'); sys.path.insert(0,'utils'); import feasibility_report as fr; fr.YEARS=[2022]; fr.main()"
-```
+## 阶段输出
 
-## Data Availability
+- `pre_icr_schedules_YEAR.csv`：第2.5.1节生成后、首次ICR前。
+- `post_icr_schedules_YEAR.csv`：梯级更新结束、额外联合投影之前。
+- `diverse_schedules_YEAR.csv`：额外联合投影后的最终交付方案，保持原文件名。
+- `paper_stages_YEAR.json`：阶段说明、外层次数和各项停止检查结果。
+- `paper_metrics_inputs_YEAR.npz`：scheme_01对应的阶段流量、库容、水位、容量限幅功率、目标与动态界限；供统计脚本读取。
 
-The repository includes **6 reference years** (1959, 1961–1964 in `train/`; 2022 in `test/`)
-for format validation and code testing. The full 1959–2022 hydrological dataset used in
-the paper is subject to institutional data-sharing policies and is available from the
-corresponding author upon reasonable request.
-
-A placeholder data generator is provided for pipeline validation:
-```bash
-python generate_dummy.py
-```
-
-## Output Units
-
-- Release and inflow: `m3/s`.
-- Storage: `1e8 m3` (亿立方米).
-- Water level: `m`.
-- Power: `MW`.
-- Energy: `MWh`, `GWh`, and `1e8 kWh` in the post-processing summary.
-
-## Reproducibility Notes
-
-This repository is the paper baseline release.  It preserves the original workflow
-and example outputs; it is not a claim that later experimental branches or audit
-tools are included here.  Treat the CSV schedule as the direct inference output and
-the Excel workbook as a derived post-processing artifact.
-
-## Repository Layout
-
-```text
-MCC-HT/
-  constraint/                 Constraint and water-level conversion code
-  shuxing/                    Curves and plant/constraint data
-  test/                       Annual inference input (2022 reference)
-  train/                      Historical training inputs (5 reference years)
-  utils/                      Post-processing and evaluation scripts
-  README.md                   This guide
-  config.yaml                 Configuration (synced with paper Table 1)
-  train.py                    One-click training
-  infer.py                    One-click inference
-  generate_dummy.py           Placeholder data generator
-```
-
-## Key Parameters
-
-All parameters in `config.yaml` match the paper:
-
-| Category | Parameter | Value |
-|:---------|:----------|:------|
-| Model | d_model / nhead / layers | 144 / 12 / 4 |
-| Model | FFN / Dropout | 576 / 0.2 |
-| Training | Optimizer | AdamW (lr=1e-3, wd=1e-4) |
-| Training | Max epochs / patience | 500 / 120 |
-| Training | Gradient clipping | 0.8 |
-| ICR | Self-consistent iterations | 3 |
-| Loss | λ_flow | 0.35 → 0.05 (epoch 0–45) |
-| Loss | λ_term | 1.2 → 2.4 (epoch 0–32) |
-| Loss | λ_pow | 0.0 → 0.04 (epoch 18–80) |
-| Loss | λ_smooth | 0.20 (fixed) |
+统计同时列出pre→post-ICR与pre→最终（含联合投影）的调整量，不把后者全部归因于ICR。阶段数据缺失、非有限值、训练验证重叠、实验年份缺失都会明确报错。多种方法的比较需分别运行相应模型，本包没有新增POA/PSO或伪造其结果。

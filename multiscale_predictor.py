@@ -30,6 +30,8 @@ from types import SimpleNamespace
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 from constraint.strict_converter import StrictWaterLevelConverter
 from constraint.differentiable_joint_projection import project_joint_schedule
+from paper_contract import run_cascade_updates, require_year_files, validate_year_split
+from paper_physics import operating_checks, cascade_state
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -140,7 +142,7 @@ else:
 # Self-consistent inflow projection settings
 # Safeguard defaults; can be overridden by config.yaml if present
 SELF_CONSISTENT_ITERS_DEFAULT = 2
-SELF_CONSISTENT_TOL = 1e-4
+# Stopping is defined by physical feasibility, not inter-iteration flow changes.
 
 
 def _read_csv(path: Path) -> pd.DataFrame:
@@ -912,6 +914,7 @@ def run_multiscale_inference(
     except Exception:
         sequence_length = 36
 
+    require_year_files(_SCRIPT_DIR / data_dir_test, target_years)
     for year in target_years:
         dataset = AnnualReservoirDataset(
             data_dir=data_dir_test,
@@ -923,8 +926,7 @@ def run_multiscale_inference(
             precomputed_transforms=precomputed,
         )
         if len(dataset) == 0:
-            print(f"[infer] year={year}: dataset empty, skipping.")
-            continue
+            raise ValueError(f'[infer] year={year}: empty annual dataset')
 
         sample = dataset[-1]
         features = sample["features"].unsqueeze(0).to(device)
@@ -1026,6 +1028,9 @@ def train_multiscale_model(
     loss_curve_csv = str(loss_curve_cfg.get("csv", "training_loss_history.csv"))
     sc_iters_train = _resolve_self_consistent_iters(cfg, "training", SELF_CONSISTENT_ITERS_DEFAULT)
     sc_iters_val = _resolve_self_consistent_iters(cfg, "training", SELF_CONSISTENT_ITERS_DEFAULT)
+
+    validate_year_split(train_years, val_years)
+    require_year_files(script_dir / data_cfg.get('train_data_dir', 'train'), train_years + val_years)
 
     # ------------------------------------------------------------------
     # Dataset preparation
@@ -1435,7 +1440,7 @@ def train_multiscale_model(
         flow_loss=flow_loss,
         power_surrogate=power_surrogate,
         w_flow=weight_cfg.get("flow", 1.0),
-        w_term=weight_cfg.get("term", 1.0),
+        w_term=weight_cfg.get("flow", 1.0),
         w_ramp=weight_cfg.get("ramp", 0.0),
         w_power=weight_cfg.get("power", power_weight if enable_power_optimization else 0.0),
         terminal_loss=terminal_loss,
@@ -1755,15 +1760,13 @@ def train_multiscale_model(
         else:
             progress = epoch_idx / max(1, max_epochs - 1)
 
-        term_sched = curriculum_cfg.get("term", {})
-        if term_sched:
-            term_progress = _schedule_progress(epoch_idx, term_sched)
-            criterion.w_term = _lerp(term_sched.get("w_start", criterion.w_term), term_sched.get("w_end", criterion.w_term), term_progress)
-
         flow_sched = curriculum_cfg.get("flow", {})
         if flow_sched:
             flow_progress = _schedule_progress(epoch_idx, flow_sched)
             criterion.w_flow = _lerp(flow_sched.get("w_start", criterion.w_flow), flow_sched.get("w_end", criterion.w_flow), flow_progress)
+
+        # Equation (22): one shared alignment weight for both MSE terms.
+        criterion.w_term = criterion.w_flow
 
         power_sched = curriculum_cfg.get("power", {})
         if power_sched:
@@ -1922,6 +1925,7 @@ def train_multiscale_model(
                 V_max=Vmax_use,
                 sc_iters=sc_iters_train,
                 post_step=_train_post_step,
+                curves=curves_for_proj, level_limits=level_limits_slice, terminal_check_target=V_target,
             )
             q_phys = sc_result["q_phys"]
             joint_vmin, joint_vmax = _joint_storage_bounds(
@@ -2167,6 +2171,7 @@ def train_multiscale_model(
                     V_max=Vmax_use,
                     sc_iters=sc_iters_val,
                     post_step=_val_post_step,
+                curves=curves_for_proj, level_limits=level_limits_slice, terminal_check_target=V_target,
                 )
                 q_phys = sc_result["q_phys"]
                 joint_vmin, joint_vmax = _joint_storage_bounds(
@@ -2295,9 +2300,9 @@ def train_multiscale_model(
                     total_targets += shortfall.numel()
                 need_values.extend(need.detach().cpu().view(-1).tolist())
                 cap_values.extend(cap.detach().cpu().view(-1).tolist())
-                term_err = need.mean().item()
+                term_err = (to_level_fn(V_T) - to_level_fn(V_target)).abs().mean().item()
                 ramp = ((q_phys[:, 1:] - q_phys[:, :-1]) ** 2).mean().item()
-                power_val = power_value.item() if power_value is not None else 0.0
+                power_val = power_value.item() / 1e9 if power_value is not None else 0.0  # selection score in GW; training loss remains W
 
                 val_violation_sum += violation * batch_size_cur
                 val_term_err_sum += term_err * batch_size_cur
@@ -2602,7 +2607,7 @@ def _resolve_self_consistent_iters(
         val = int(sec_cfg.get("self_consistent_iters", default_iters))
     except Exception:
         val = int(default_iters)
-    return max(1, min(int(val), int(max_iters)))
+    return max(2, min(int(val), 3))
 
 
 def _run_self_consistent_refinement(
@@ -2620,53 +2625,52 @@ def _run_self_consistent_refinement(
     V_min: torch.Tensor,
     V_max: torch.Tensor,
     sc_iters: int,
+    curves=None,
+    level_limits=None,
+    terminal_check_target=None,
     post_step: Optional[Callable[[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, Dict[str, Any]]]] = None,
 ) -> Dict[str, Any]:
-    """Shared self-consistent inflow loop used by train/val/generation."""
-
-    q_prev = None
+    """Two mandatory updates; stop by physical/terminal checks, at most three."""
     post_payload: Dict[str, Any] = {}
-    q_cur = q_phys
-    for _ in range(max(1, int(sc_iters))):
+    names = list(_RESERVOIR_NAMES[:q_phys.size(-1)])
+    static = load_static_params(names)
+    capacities = [static[name]['capacity_installed'] for name in names]
+    ramps = _CONSTRAINT_CFG.get('ramp_constraints', {})
+    last_check = {}
+
+    def step(q_cur):
+        nonlocal post_payload
         q_in_pred = _compute_cascade_inflows(q_cur, head_inflow, interval_inflow)
-        q_rebuilt = _rebuild_capacity_flow(
-            model=model,
-            raw_logits=raw_logits,
-            q_min=q_min,
-            q_max=q_max,
-            q_in=q_in_pred,
-            V0=V0,
-            V_target=V_target,
-            delta_t=delta_t,
-            V_min=V_min,
-            V_max=V_max,
-        )
+        q_rebuilt = _rebuild_capacity_flow(model=model, raw_logits=raw_logits,
+            q_min=q_min, q_max=q_max, q_in=q_in_pred, V0=V0,
+            V_target=V_target, delta_t=delta_t, V_min=V_min, V_max=V_max)
         if q_rebuilt is not None:
             q_cur = q_rebuilt
-            q_in_pred = _compute_cascade_inflows(q_cur, head_inflow, interval_inflow)
-
+        # Each outer update contains a complete vectorized ICR application.
+        if hasattr(model, 'hierarchical_projection') and getattr(model, 'enable_hard_projection', True):
+            q_cur, _, _ = model.hierarchical_projection(q_raw=q_cur,
+                q_in=q_in_pred, V0=V0, V_target=V_target, q_min=q_min,
+                q_max=q_max, Vmin=V_min, Vmax=V_max, delta_t=delta_t)
         if post_step is not None:
-            try:
-                q_post, payload = post_step(q_cur, q_in_pred)
-                if isinstance(q_post, torch.Tensor):
-                    q_cur = q_post
-                if isinstance(payload, dict):
-                    post_payload = payload
-            except Exception:
-                pass
+            q_cur, payload = post_step(q_cur, q_in_pred)
+            if isinstance(payload, dict):
+                post_payload = payload
+        return q_cur
 
-        if q_prev is not None:
-            diff = (q_cur - q_prev).abs().max().item()
-            if diff <= SELF_CONSISTENT_TOL:
-                break
-        q_prev = q_cur.detach()
+    def feasible(q_cur):
+        nonlocal last_check
+        last_check = operating_checks(q_cur, head_inflow, interval_inflow,
+            V0, V_target if terminal_check_target is None else terminal_check_target, delta_t, q_min, q_max, V_min, V_max, curves,
+            level_limits=level_limits, flow_ramps=ramps, capacities=capacities)
+        return last_check['feasible']
 
-    q_in_pred = _compute_cascade_inflows(q_cur, head_inflow, interval_inflow)
-    return {
-        "q_phys": q_cur,
-        "q_in_pred": q_in_pred,
-        "payload": post_payload,
-    }
+    q_cur, iterations, passed = run_cascade_updates(q_phys, step, feasible,
+        max_iterations=max(2, min(int(sc_iters), 3)))
+    return dict(q_phys=q_cur,
+        q_in_pred=_compute_cascade_inflows(q_cur, head_inflow, interval_inflow),
+        payload=post_payload, iterations=iterations, feasible=passed,
+        checks=last_check.get('checks', {}))
+
 
 
 def _update_post_projection_terminal_policy(
@@ -3553,6 +3557,8 @@ def generate_diverse_annual_schedules(
     residual_values: List[float] = []
     projection_infeasible: List[float] = []
     projected_paths: List[np.ndarray] = []
+    pre_icr_paths, pre_icr_flows, post_icr_paths, post_icr_flows = [], [], [], []
+    outer_checks = []
     post_unreachable: Dict[str, float] = {}
     post_hard_gap: Dict[str, float] = {}
     post_fallback_logged = False
@@ -3575,10 +3581,14 @@ def generate_diverse_annual_schedules(
                 return_logits=True,
             )
             if isinstance(out, tuple) and len(out) == 3:
-                q_phys, raw_logits, _ = out
+                q_phys, raw_logits, q_pre = out
             else:
                 q_phys = out if not isinstance(out, tuple) else out[0]
                 raw_logits = None
+                raise RuntimeError('The paper workflow requires a raw pre-ICR trajectory.')
+            pre_icr_flows.append(q_pre.squeeze(0).detach().cpu().numpy())
+            pre_storage = storage_V0.unsqueeze(1) + torch.cumsum((q_in_obs - q_pre) * dt_tensor / 1e8, dim=1)
+            pre_icr_paths.append(pre_storage.squeeze(0).detach().cpu().numpy())
 
             projection_V: Optional[torch.Tensor] = None
             meta: Dict[str, Any] = {}
@@ -3669,6 +3679,7 @@ def generate_diverse_annual_schedules(
                 V_max=storage_Vmax,
                 sc_iters=sc_iters_generation,
                 post_step=_generation_post_step,
+                curves=curves_for_proj, level_limits=level_limits, terminal_check_target=storage_VT,
             )
             q_phys = sc_result["q_phys"]
             q_in_pred = sc_result["q_in_pred"]
@@ -3683,6 +3694,12 @@ def generate_diverse_annual_schedules(
                     "V": projection_V.detach(),
                     "meta": meta,
                 }
+
+            # Preserve the paper's post-ICR endpoint separately from the retained extension.
+            _, icr_storage = cascade_state(q_phys, head_inflow, interval_inflow, storage_V0, dt_vec)
+            post_icr_flows.append(q_phys.squeeze(0).detach().cpu().numpy())
+            post_icr_paths.append(icr_storage.squeeze(0).detach().cpu().numpy())
+            outer_checks.append(dict(iterations=sc_result['iterations'], feasible=sc_result['feasible'], checks=sc_result['checks']))
 
             # Use the same differentiable joint layer as training after the
             # existing projections; the final cascade path is solved together.
@@ -3772,7 +3789,7 @@ def generate_diverse_annual_schedules(
                 cap = torch.zeros_like(need)
             shortfall = torch.clamp(need - cap, min=0.0)
             infeasible = (shortfall > 0).float().mean().item()
-            term_err = need.mean().item()
+            term_err = (to_level_fn(V_T) - to_level_fn(V_target)).abs().mean().item()
             ramp = ((q_phys[:, 1:] - q_phys[:, :-1]) ** 2).mean().item() if q_phys.size(1) > 1 else 0.0
             path_violation = ((storage_path < storage_Vmin) | (storage_path > storage_Vmax)).float().mean().item()
 
@@ -3888,6 +3905,44 @@ def generate_diverse_annual_schedules(
 
     out_df = pd.concat(rows, axis=0, ignore_index=True)
     out_df.to_csv(out_path, index=False, encoding="utf-8-sig")
+    for label, flows, volumes in (('pre_icr', pre_icr_flows, pre_icr_paths),
+                                  ('post_icr', post_icr_flows, post_icr_paths)):
+        stage_rows = [schedule_df_export(flows[i], k + 1, volumes[i])
+            for k, i in enumerate(order_indices[:sample_count])]
+        pd.concat(stage_rows, ignore_index=True).to_csv(
+            out_dir / f'{label}_schedules_{year}.csv', index=False, encoding='utf-8-sig')
+    (out_dir / f'paper_stages_{year}.json').write_text(json.dumps(dict(
+        pre_icr='initial generation before first ICR',
+        post_icr='after cascade updates, before retained joint projection',
+        final='diverse_schedules: after retained joint projection',
+        joint_projection_retained=True, outer_updates=outer_checks), ensure_ascii=False, indent=2), encoding='utf-8')
+
+    selected = order_indices[0]
+    arrays = dict(
+        pre_flow=pre_icr_flows[selected], pre_storage=pre_icr_paths[selected],
+        post_icr_flow=post_icr_flows[selected], post_icr_storage=post_icr_paths[selected],
+        final_flow=decoded_arr[selected], final_storage=projected_paths[selected],
+        target_storage=storage_VT.squeeze(0).detach().cpu().numpy(),
+        initial_storage=storage_V0.squeeze(0).detach().cpu().numpy(),
+        head_inflow=head_np, interval_inflow=interval_np, seconds=dt_np,
+        flow_min=qmin.squeeze(0).detach().cpu().numpy(),
+        flow_max=qmax.squeeze(0).detach().cpu().numpy())
+    static = load_static_params(res_names)
+    capacities = np.asarray([static[name]['capacity_installed'] for name in res_names])
+    arrays['power_max'] = capacities
+    arrays['target_levels'] = curves_for_proj.v2h_all(storage_VT).squeeze(0).detach().cpu().numpy()
+    arrays['level_min'] = (level_limits['H_min'] if level_limits is not None else curves_for_proj.v2h_all(storage_Vmin)).detach().cpu().numpy()
+    arrays['level_max'] = (level_limits['H_max'] if level_limits is not None else curves_for_proj.v2h_all(storage_Vmax)).detach().cpu().numpy()
+    for stage in ('pre', 'post_icr', 'final'):
+        v = torch.as_tensor(arrays[stage + '_storage'], device=torch_device, dtype=qmin.dtype)
+        q = torch.as_tensor(arrays[stage + '_flow'], device=torch_device, dtype=qmin.dtype)
+        levels = curves_for_proj.v2h_all(v)
+        tail = curves_for_proj.q2zt_all(q)
+        arrays[stage + '_levels'] = levels.detach().cpu().numpy()
+        power = 1000. * 9.81 * .88 * q * (levels - tail).clamp_min(0.) / 1e6
+        arrays[stage + '_power'] = np.minimum(np.maximum(power.detach().cpu().numpy(), 0.), capacities)
+    np.savez_compressed(out_dir / f'paper_metrics_inputs_{year}.npz', **arrays)
+
     print(f"[generate] year={year} saved UTF-8 file -> {out_path}")
 
     violation_rate = float(np.mean(np.asarray(violation_list) > 0)) if violation_list else 0.0

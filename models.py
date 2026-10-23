@@ -80,7 +80,8 @@ class SimplexCapacityHead(nn.Module):
         distributed_volume = (alloc_volume.unsqueeze(1) * weights * capacity_volume) / weighted_capacity.unsqueeze(1)
 
         q = q_min + distributed_volume / dt_vol_safe
-        return torch.clamp(q, min=q_min, max=q_max)
+        # Equations (9)-(11) return the raw trajectory. ICR Stage 1 bounds it.
+        return q
 
 
 class OptimizedTransformerPredictor(nn.Module):

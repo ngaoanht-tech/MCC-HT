@@ -1,0 +1,22 @@
+{
+  "joint_module_identical": true,
+  "joint_call_lines": [
+    1935,
+    3710,
+    2181
+  ],
+  "modified_existing_files": [
+    "config.yaml",
+    "config_loader.py",
+    "infer.py",
+    "losses.py",
+    "models.py",
+    "multiscale_predictor.py",
+    "README.md",
+    "utils\\evaluate_all.py",
+    "utils\\feasibility_report.py"
+  ],
+  "original_zip_sha256": "3325c9d0747eac5f44605630ed144fd8d311d86de469621b37eb3df6263d844d",
+  "tests": "34 passed, 9 third-party/transformer warnings",
+  "no_manuscript_results_recomputed": true
+}

@@ -1,0 +1,271 @@
+constraints:
+  allow_config_storage_override: true
+  bounds_dir: shuxing/constraints
+  curves_dir: shuxing/curves
+  hard_projection: true
+  initial_levels:
+  - 974.5
+  - 824.5
+  - 599.5
+  - 379.5
+  - 174.5
+  - 66.5
+  initial_storage:
+  - 58.224998474121094
+  - 188.97799682617188
+  - 115.0719985961914
+  - 49.29050064086914
+  - 387.9490051269531
+  - 16.184999465942383
+  target_levels:
+  - 974.5
+  - 824.5
+  - 599.5
+  - 379.5
+  - 174.5
+  - 66.5
+  target_storage:
+  - 58.224998474121094
+  - 188.97799682617188
+  - 115.0719985961914
+  - 49.29050064086914
+  - 387.9490051269531
+  - 16.184999465942383
+  volume_scale: 1e-8
+curriculum:
+  flow:
+    end_epoch: 45
+    start_epoch: 0
+    w_end: 0.05
+    w_start: 0.35
+  k:
+    end: 36
+    start: 36
+  power:
+    end_epoch: 80
+    start_epoch: 18
+    w_end: 0.04
+    w_start: 0.0
+data:
+  preprocessing:
+    fit_transforms: true
+    normalize: true
+    use_log_transform: true
+  results_dir: results
+  train_data_dir: train
+  years:
+    train:
+    - 1959
+    - 1961
+    - 1962
+    validation:
+    - 1963
+    - 1964
+    test:
+    - 2022
+generation:
+  mc_dropout:
+    enabled: false
+    rate: 0.2
+  output_dir: diverse_results
+  population_size: 1
+  self_consistent_iters: 3
+  terminal_policy:
+    allow_post_projection_fallback: false
+  years:
+  - 2022
+loss:
+  barrier:
+    allow_with_projection: true
+    enabled: false
+    weight: 0.0
+  flow_path:
+    enabled: false
+  power:
+    enabled: true
+    weight: 0.08
+  ramp:
+    enabled: true
+    weight: 1.0
+  terminal:
+    enabled: true
+    mode: volume_window
+    tolerance: 0.5
+    use_level: true
+    window_k: 36
+  total:
+    weights:
+      barrier: 0.3
+      flow: 1.0
+      flow_drop: 1.0
+      need: 0.3
+      power: 0.06
+      ramp: 0.2
+      term_to_go: 0.0
+      terminal: 5.0
+  water_level:
+    enabled: false
+    per_reservoir_mult:
+      default: 1.0
+    w_path: 0.0
+    w_ramp: 0.0
+  weights:
+    barrier: 0.0
+    flow: 0.35
+    flow_drop: 0.0
+    late_margin: 0.0
+    need: 0.0
+    power: 0.08
+    ramp: 0.2
+    term: 0.35
+    term_to_go: 0.0
+metrics:
+  feasible_infeasible_tolerance: 0.0
+  feasible_term_error_tolerance: 0.01
+  feasible_violation_tolerance: 0.0
+  infeasible_penalty: 1000.0
+  infeasible_warn_ratio: 0.0
+  power_coef: 9.0
+  ramp_coef: 0.0
+  selection_mode: power_first
+  term_coef: 45.0
+  violation_coef: 400.0
+model:
+  decoder:
+    hidden_dim: 128
+    output_dim: 6
+  input_dim: 22
+  multiscale_head:
+    enabled: false
+    shared_dim: 128
+    temporal_dim: 64
+  output_dim: 6
+  transformer:
+    activation: ReLU
+    d_model: 144
+    nhead: 12
+    num_layers: 4
+    use_layer_norm: true
+multiscale:
+  enabled: true
+  guidance:
+    need_ratio_scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    - 1.0
+    - 1.0
+    - 1.0
+    remain_ratio_scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    - 1.0
+    - 1.0
+    - 1.0
+    slack_scale:
+    - 1.0
+    - 1.0
+    - 1.0
+    - 1.0
+    - 1.0
+    - 1.0
+  reduces:
+  - mean
+  - sum
+  - std
+  tcn:
+    channels: 64
+    dilations:
+    - 1
+    - 2
+    - 3
+    enabled: false
+    kernels:
+    - 3
+    - 5
+    - 7
+  windows:
+  - 3
+  - 6
+  - 18
+  - 36
+projection:
+  cascade_rescue:
+    enabled: true
+  enabled: true
+  post_clamp_rebalance_iters: 100
+  terminal_second_rebalance_iters: 5
+trainer:
+  max_epochs: 500
+  smoke: false
+training:
+  cascade_consistency:
+    enabled: false
+    weight: 0.05
+  curriculum:
+    enabled: false
+    phase1_epochs: 0
+    phase2_epochs: 0
+    weights_phase1: {}
+    weights_phase2: {}
+  early_stopping_patience: 8
+  gradient_clipping:
+    max_norm: 0.8
+  hyperparameters:
+    full_search:
+      batch_size:
+      - 2
+      - 4
+      - 8
+      - 16
+      - 32
+      dropout:
+      - 0.1
+      - 0.2
+      - 0.3
+      learning_rate:
+      - 0.001
+      - 0.0005
+      - 0.0001
+      sequence_length:
+      - 3
+      - 5
+      - 9
+      - 17
+      - 28
+      - 32
+    quick_search:
+      batch_size:
+      - 8
+      - 32
+      dropout:
+      - 0.1
+      - 0.2
+      learning_rate:
+      - 0.001
+      - 0.0005
+      sequence_length:
+      - 3
+      - 32
+  logging:
+    loss_curve:
+      csv: training_loss_history.csv
+      png: training_loss_curve.png
+    mode: standard
+  max_epochs: 500
+  optimizer:
+    type: AdamW
+    weight_decay: 0.0001
+  patience: 120
+  projection:
+    enabled: true
+  scheduler:
+    factor: 0.5
+    min_lr: 0.0001
+    mode: min
+    patience: 6
+    threshold: 0.001
+    type: ReduceLROnPlateau
+  seed: 20260308
+  self_consistent_iters: 3

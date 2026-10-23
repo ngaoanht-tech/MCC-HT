@@ -34,7 +34,7 @@ class RampLoss(nn.Module):
         if self.weight <= 0.0:
             return flows.new_tensor(0.0)
         diff = torch.diff(flows, dim=1)
-        return self.weight * diff.abs().mean()
+        return self.weight * diff.square().mean()
 
 
 class InteriorBarrierLoss(nn.Module):
@@ -100,11 +100,7 @@ class TerminalWindowLoss(nn.Module):
             err = hT - hTgt
         else:
             err = VT - V_target
-        if (q_min is not None) and (q_max is not None):
-            span = (q_max[:, -k:, :] - q_min[:, -k:, :]).clamp_min(self.eps)
-            cap = torch.sum(span * dt_win, dim=1) / 1e8
-            scale = cap.median(dim=1, keepdim=True).values.clamp_min(self.eps)
-            err = err / scale
+        # Equation (22): terminal water-level MSE, without capacity scaling.
         return torch.mean(err ** 2)
 
 
@@ -335,7 +331,7 @@ class TorchCurves(nn.Module):
 
 
 class PowerEnergySurrogate(nn.Module):
-    """Compute average turbine output (GW) using differentiable curves."""
+    """Compute the release-based time-averaged total power (W), Eq. (23)."""
 
     def __init__(self, curves: TorchCurves, rho: float = 1000.0, g: float = 9.81, eta: float = 0.88) -> None:
         super().__init__()
@@ -367,8 +363,8 @@ class PowerEnergySurrogate(nn.Module):
         if self._per_reservoir_scale is not None:
             scale = self._per_reservoir_scale.to(device=q_out.device, dtype=q_out.dtype)
             power_watts = power_watts * scale.view(1, 1, -1)
-        power_gw = power_watts / 1e9
-        weighted = power_gw * dt_hours
+        # Equation (23) uses rho*g*eta*Q*H in watts, not GW.
+        weighted = power_watts * dt_hours
         denom = dt_hours.sum(dim=(1, 2)).clamp_min(1e-6)
         avg_power = weighted.sum(dim=(1, 2)) / denom
         return avg_power

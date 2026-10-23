@@ -222,11 +222,11 @@ def _pick_storage_columns(df: pd.DataFrame, preferred_names: Optional[Sequence[s
 
 def check_terminal_attainment(
     year: int,
-    tol: float = 1e-3,
+    tol: float = 0.01,
     schedule_df: Optional[pd.DataFrame] = None,
     config: Optional[Dict] = None,
 ) -> Dict:
-    """Check terminal storage/level attainment for all schemes."""
+    """Check terminal water levels within tol metres for all schemes."""
     df = schedule_df if schedule_df is not None else load_schedule_result(year, scheme=None)
     if "scheme" not in df.columns:
         raise KeyError("生成结果缺少 scheme 列")
@@ -243,27 +243,15 @@ def check_terminal_attainment(
         pad = np.zeros((len(res_pairs) - V_target.size,), dtype=float)
         V_target = np.concatenate([V_target, pad])
 
-    term_cfg = (cfg.get("loss", {}) or {}).get("terminal", {}) or {}
-    term_mode = str(term_cfg.get("mode", "volume_window"))
-    h_tol = float(term_cfg.get("h_tolerance", 0.3))
-
     curve = _maybe_build_curves(cfg, [name for name, _ in res_pairs])
-    V_target_tensor = torch.tensor(V_target, dtype=torch.float32)
-    if term_mode == "level_window" and curve is not None:
-        H_target = _resolve_level_targets([name for name, _ in res_pairs], term_cfg)
-        H_lo_ref = H_target - h_tol
-        H_hi_ref = H_target + h_tol
-        V_lo_ref = curve.h2v_all(H_lo_ref)
-        V_hi_ref = curve.h2v_all(H_hi_ref)
-    else:
-        V_lo_ref = V_target_tensor - tol
-        V_hi_ref = V_target_tensor + tol
-        if curve is not None:
-            H_lo_ref = curve.v2h_all(V_lo_ref)
-            H_hi_ref = curve.v2h_all(V_hi_ref)
-        else:
-            H_lo_ref = torch.zeros_like(V_lo_ref)
-            H_hi_ref = torch.zeros_like(V_hi_ref)
+    if curve is None:
+        raise ValueError('Water-level curves are required for the terminal tolerance in metres.')
+    V_target_tensor = torch.tensor(V_target, dtype=torch.float64)
+    configured_levels = (cfg.get('constraints', {}) or {}).get('target_levels')
+    H_target = (torch.tensor(configured_levels, dtype=torch.float64)
+                if configured_levels is not None else curve.v2h_all(V_target_tensor))
+    H_lo_ref, H_hi_ref = H_target - tol, H_target + tol
+    V_lo_ref, V_hi_ref = curve.h2v_all(H_lo_ref), curve.h2v_all(H_hi_ref)
 
     results: Dict[str, Dict] = {}
     pass_count = 0
@@ -273,7 +261,7 @@ def check_terminal_attainment(
         for idx, (_, col) in enumerate(res_pairs):
             V_T[idx] = float(pd.to_numeric(last[col], errors="coerce").iloc[0])
 
-        V_T_tensor = torch.tensor(V_T, dtype=torch.float32)
+        V_T_tensor = torch.tensor(V_T, dtype=torch.float64)
         V_low_excess = (V_lo_ref - V_T_tensor).clamp_min(0.0)
         V_high_excess = (V_T_tensor - V_hi_ref).clamp_min(0.0)
         V_gap = V_low_excess + V_high_excess
@@ -290,7 +278,7 @@ def check_terminal_attainment(
             H_gap_list = [0.0] * len(res_pairs)
 
         diff = np.abs(V_target - V_T)
-        ok = bool(np.all(diff <= tol))
+        ok = bool(torch.all((H_T - H_target).abs() <= tol))
         if ok:
             pass_count += 1
         results[str(scheme_name)] = {
@@ -306,6 +294,7 @@ def check_terminal_attainment(
         "year": int(year),
         "reservoirs": [name for name, _ in res_pairs],
         "tolerance": float(tol),
+        "tolerance_unit": "m",
         "total_schemes": int(len(results)),
         "pass_count": int(pass_count),
         "fail_count": int(len(results) - pass_count),
@@ -323,7 +312,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Unified evaluation for generated schedules.")
     parser.add_argument("--years", nargs="+", type=int, required=True, help="Years to evaluate")
     parser.add_argument("--window", type=int, default=10, help="Terminal window K")
-    parser.add_argument("--tol", type=float, default=1e-3, help="Terminal tolerance (亿m³)")
+    parser.add_argument("--tol", type=float, default=0.01, help="Terminal water-level tolerance (m)")
     args = parser.parse_args()
 
     for year in args.years:

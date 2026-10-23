@@ -41,9 +41,10 @@ except ImportError:  # pragma: no cover
 
 
 OUT_DIR = RESULTS_DIR
-YEARS = [2018, 2019, 2020, 2021, 2022]
+YEARS = list(range(2015, 2023))
 T = 36
-TOL = 1e-6
+TOL = 0.0
+TERMINAL_LEVEL_TOL = 0.01
 
 TOKENS = {
     "constraint_csv": "\u7ea6\u675f\u6761\u4ef6",  # 约束条件
@@ -174,7 +175,7 @@ def _calc_year(year: int) -> Dict:
     constraints = load_constraints()
     cfg = load_config()
     need_cap = diagnose_need_capacity(year, schedule_df=df_all.copy(), constraints=constraints, config=cfg)
-    terminal = check_terminal_attainment(year, tol=TOL, schedule_df=df_all.copy(), config=cfg)
+    terminal = check_terminal_attainment(year, tol=TERMINAL_LEVEL_TOL, schedule_df=df_all.copy(), config=cfg)
     terminal_reachability = extra.get("terminal_reachability", {}) if isinstance(extra, dict) else {}
 
     return {
@@ -249,10 +250,10 @@ def _build_markdown(reports: Sequence[Dict]) -> str:
                 lines.append("- min(capacity_minus_need)={:.3f} (1e8 m3)".format(min(gaps)))
         if terminal:
             lines.append(
-                "- terminal_pass_rate: {}/{} (tol={:.6f} 1e8m3)".format(
+                "- terminal_pass_rate: {}/{} (tol={:.6f} m)".format(
                     terminal.get("pass_count", 0),
                     terminal.get("total_schemes", 0),
-                    terminal.get("tolerance", TOL),
+                    terminal.get("tolerance", TERMINAL_LEVEL_TOL),
                 )
             )
         for name, pr in rep.get("per_reservoir", {}).items():
