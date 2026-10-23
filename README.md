@@ -1,8 +1,8 @@
 # MCC-HT manuscript-aligned core with retained joint projection
 
-本目录按 Manuscript_clean_R 的方法描述调整核心流程，并按作者要求保留后续加入的联合投影层及其训练、验证、推理调用。它不是当时生成投稿结果的归档版本，也没有声称复现原文的结果和2.79秒运行时间。原始压缩包未改动。
+MCC-HT用于乌东德、白鹤滩、溪洛渡、向家坝、三峡和葛洲坝六库梯级的长期调度。本仓库包含模型、ICR协调、梯级更新、评估与计时程序，并保留后续加入的联合投影层及其训练、验证、推理调用。当前版本不是生成投稿结果时的归档版本，尚未用完整数据和原始权重复算论文结果及运行时间。
 
-## 本次调整
+## 方法与评估
 
 - 初步生成返回式(9)–(11)的原始流量；首次流量限幅由ICR Stage 1完成。
 - 每次外层更新包含完整ICR；至少两轮、最多三轮。按重构轨迹的运行约束和0.01m末水位判据决定是否提前结束，不以相邻轮流量变化作为终止条件。
@@ -20,7 +20,7 @@ python -m pip install -r requirements-windows-tested.txt
 python -m pytest tests -q
 ```
 
-Windows验证依赖为PyTorch 2.8.0+cu128（由本机已有环境提供；确切版本见CHANGELOG中的验证记录）、NumPy 1.26.4、CVXPY 1.6.5、cvxpylayers 0.1.6、diffcp 1.0.23。安装PyTorch时应选择适合本机的版本；该层原实现和三个调用均保留。较旧diffcp会给出弃用警告。
+Windows测试环境为Python 3.10.10、PyTorch 2.8.0+cu128、NumPy 1.26.4、CVXPY 1.6.5、cvxpylayers 0.1.6、diffcp 1.0.23。安装PyTorch时应选择适合本机的版本。较旧diffcp会给出弃用警告。测试覆盖模型、ICR、梯级更新、联合投影和梯度回传；合成样例测试不代表论文实验复现。
 
 ## 配置和数据
 
@@ -47,7 +47,7 @@ python paper_evaluate.py --directory diverse_results --years 2015 2016 2017 2018
 python benchmark_paper.py --years 2015 2016 2017 2018 2019 2020 2021 2022
 ```
 
-训练产物位于本目录下results，不会使用审查原目录的结果文件。推理仍要求results/multiscale_best_model.pth、multiscale_hyperparameters.json和annual_transforms.pkl。旧checkpoint在本次修改后不保证有相同输出。
+训练产物位于本目录下results。推理要求results目录内存在multiscale_best_model.pth、multiscale_hyperparameters.json和annual_transforms.pkl。当前代码不保证与旧checkpoint原先的输出相同。
 
 ## 阶段输出
 
@@ -57,4 +57,4 @@ python benchmark_paper.py --years 2015 2016 2017 2018 2019 2020 2021 2022
 - `paper_stages_YEAR.json`：阶段说明、外层次数和各项停止检查结果。
 - `paper_metrics_inputs_YEAR.npz`：scheme_01对应的阶段流量、库容、水位、容量限幅功率、目标与动态界限；供统计脚本读取。
 
-统计同时列出pre→post-ICR与pre→最终（含联合投影）的调整量，不把后者全部归因于ICR。阶段数据缺失、非有限值、训练验证重叠、实验年份缺失都会明确报错。多种方法的比较需分别运行相应模型，本包没有新增POA/PSO或伪造其结果。
+统计同时列出pre→post-ICR与pre→最终（含联合投影）的调整量，不把后者全部归因于ICR。阶段数据缺失、非有限值、训练验证重叠、实验年份缺失都会明确报错。多种方法的比较需分别运行相应模型；本仓库未包含POA/PSO实现。

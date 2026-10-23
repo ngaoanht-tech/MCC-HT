@@ -23,14 +23,6 @@ reports/
 archive/
 tmp/
 
-# Keep the compact baseline reference outputs published with the source.
-!examples/
-!examples/baseline_results/
-!examples/baseline_results/*.csv
-!examples/baseline_results/*.xlsx
-!examples/baseline_results/*.md
-
 benchmark_results/
-.pytest_cache/
 paper_metrics_summary.json
 runtime_measurements.json
